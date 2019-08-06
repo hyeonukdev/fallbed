@@ -143,7 +143,7 @@ namespace DB_Test
             {
                 return rows[indx].SelectSingleNode(elemName).FirstChild.Value;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 //Console.WriteLine("getValue exception: {0}, index: {1}\n{2}", elemName, indx, rows[indx].InnerXml);
                 return "null";

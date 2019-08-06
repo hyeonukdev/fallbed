@@ -135,7 +135,7 @@
 
                     <Border  Grid.Column="0" Grid.Row="1" Grid.ColumnSpan="4" Grid.RowSpan="5" BorderThickness="1,1,1,1">
                         <DataGrid Name="dgUsers" AutoGenerateColumns="False" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                 Height="100"  CanUserResizeRows="False" CanUserResizeColumns="False" IsReadOnly="True">
+                                 Height="220"  CanUserResizeRows="False" CanUserResizeColumns="False" IsReadOnly="True">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Time" Binding="{Binding Time}" />
                                 <DataGridTextColumn Header="UL" Binding="{Binding UL}" />
@@ -164,9 +164,9 @@
                     </StackPanel.Resources>
 
                     <StackPanel Background="Transparent" Orientation="Vertical">
-                        <Canvas Background="Transparent"  ClipToBounds="True" Height="30">
+                        <Canvas Background="Transparent"  ClipToBounds="True" Height="20">
                             <Label x:Name="ToolTipLabel" Background="Transparent" Foreground="White" 
-                    FontSize="16" FontWeight="Bold" Content="Tooltips"/>
+                    FontSize="12" FontWeight="Bold" Content="Tooltips" VerticalAlignment="Top" Height="20" Padding="0,0,0,0"/>
                         </Canvas>
                         <StackPanel x:Name="buttonStack"  Orientation="Horizontal" 
                         VerticalAlignment="Center" HorizontalAlignment="Left">
@@ -198,21 +198,25 @@
                                 ButtonColor="White" ButtonStroke="White"  ButtonStrokeThickness="2" 
                                 ButtonText="영상"   HollowButton="true"
                                  ToolTipPos="80,35"/>
+                            <local:DotButton x:Name="chartBtn" MouseUp="chartBtn_Click" 
+                                ButtonColor="Blue" ButtonStroke="Blue"  ButtonStrokeThickness="2" 
+                                ButtonText="차트"   HollowButton="true"
+                                 ToolTipPos="110,35"/>
                             <local:DotButton x:Name="closeBtn" MouseUp="closeBtn_Click" 
                                 ButtonColor="DarkViolet" ButtonStroke="DarkViolet" ButtonStrokeThickness="2" 
                                 ButtonText="종료"  HollowButton="true"
-                                 ToolTipPos="110,35"/>
+                                 ToolTipPos="140,35"/>
 
                             <Label x:Name="stopBtn" MouseUp="stopBtn_Click" Background="Transparent" Foreground="White"
-                      BorderBrush="Red" BorderThickness="1" Height="35" Width="250"
+                      BorderBrush="Red" BorderThickness="1" Height="30" Width="250"
                       HorizontalAlignment="Center" VerticalAlignment="Center"
                       VerticalContentAlignment="Center"  HorizontalContentAlignment="Center"
-                      FontSize="14" Cursor="Hand"/>
+                      FontSize="12" Cursor="Hand"/>
                         </StackPanel>
                     </StackPanel>
                 </StackPanel>
 
-                <Frame x:Name="charts" Source="LoadCell_Charts.xaml"/>
+                <!--<Frame x:Name="charts" Source="LoadCell_Charts.xaml"/>-->
 
             </StackPanel>
         </StackPanel>

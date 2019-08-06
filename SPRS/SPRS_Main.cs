@@ -8,9 +8,8 @@ using System.Threading;
 using System.Xml;
 using System.Diagnostics;
 using System.Collections.Generic;
-using System.Media;
+using MySql.Data.MySqlClient;
 using DB_Test;
-using System.Diagnostics;
 
 namespace Loadcell
 {
@@ -20,16 +19,6 @@ namespace Loadcell
 
         enum xCanvasMode { SETUP, IDLE, MEASURE };
 
-
-        static string num = "10.1.41.74";
-
-
-        string joinip = "http://"+ num + "/logg.html";
-        static string url = "http://"+num+"/bed/APM_DB.php";
-        static string tcpurl = num;
-
-        static string dbname = "beddb2";
-        static APM_DB db = null;
         const double scaleBoardWidth = 0.81;// 0.92; //0.55; //<-- 프로토타입 작은 보드 폭  //  1.0;  //발판 가로폭 : 단위 미터
         const double scaleBoardHeight = 1.89;//2.07; //1.1; //<-- 프로토타입 작은 보드 높이   //1.0; //발판 세로폭 :단위 미터
         const double scaleBoardLeft = -(scaleBoardWidth / 2.0);
@@ -47,8 +36,6 @@ namespace Loadcell
         const byte CMD_STOP = 0xFF;
         const byte CMD_DATA = 0xFD;
 
-        int timecount = 0;//bedsoretime()
-
         List<User> users = new List<User>();
 
         //입력 데이터 16바이트(4x4) 발판의 다음 위치의 순서로 정렬되어 있습니다.
@@ -62,9 +49,8 @@ namespace Loadcell
         double bedCanvasHeight = 0; //Screen Canvas Height 단위: 픽셀
 
         Mutex posMutex = new Mutex();
-        Mutex dataMutex = new Mutex();
+        public static Mutex dataMutex = new Mutex();
         Mutex canvasMutex = new Mutex();
-        Mutex massMutex = new Mutex();
         Mutex cursorMutex = new Mutex();
         Mutex ratioMutex = new Mutex();
         Mutex queueMutex = new Mutex();
@@ -73,14 +59,9 @@ namespace Loadcell
         Thread dataReaderThread = null;
         Thread dataUserThread = null;
         Thread comSeekerThread = null;
-        Thread analogMeterThread = null;
         Thread terminatorThread = null;
         Thread dateTimeThread = null;
-        Thread cameraThread = null;
-
-        //------------------------------
-        Thread chartsThread = null;
-        //--------------------------------
+        Thread databaseThread = null;
 
         bool running = false;
         bool seeking = false;
@@ -105,15 +86,9 @@ namespace Loadcell
         double[] tare = { 0, 0, 0, 0 };
         double[] unit = { 1, 1, 1, 1 };
         double[] massRatio = { 0, 0, 0, 0 };
-        double[] barLength = { 0, 0, 0, 0 };
         double massTotal = 0;
-        double[] layoutWidth = new double[4]; //침대 가로 길이 나누기
-        double[] layoutscaleWidth = new double[4]; //실제 침대 가로 길이 나누기
-        double[] layoutHeight = new double[3]; //침대 세로 나누기
 
-        //-----------------------------------------------------------
         public static double[] data1 = new double[4]; //data저장
-        //-----------------------------------------------------------
 
         double samplingMass = 0.0;
 
@@ -123,23 +98,9 @@ namespace Loadcell
         Random rand = null;
 
         Stopwatch stopWatch = new Stopwatch();
-
-        // 하희 수정
-        Stopwatch stopWatch2 = new Stopwatch();
         TimeSpan ts;
-
-        // 선영
-        Stopwatch stopWatch3 = new Stopwatch();
-        TimeSpan ts3;
-
-
+        
         string strTotalTimer;
-        string strTotalTimerforsound;
-
-
-        long readCount = 0;
-        long useCount = 0;
-        long seekCount = 0;
         
         Label[] massLabel = null;
 
@@ -150,9 +111,6 @@ namespace Loadcell
 
         xMovingAverage[] movingAvr = {new xMovingAverage(4), new xMovingAverage(4),
                                       new xMovingAverage(4), new xMovingAverage(4)};
-
-        SoundPlayer simpleSound;//소리
-
         [STAThread]
         static void Main(string[] args)
         {
@@ -185,7 +143,6 @@ namespace Loadcell
             if (tareReady && unitReady) setMode(xMode.IDLE);
             else setMode(xMode.SETUP);
 
-
             serial = getSerialPort();
 
             if (serial == null)
@@ -198,35 +155,28 @@ namespace Loadcell
 
             running = true;
 
+            // 데이터읽어오는 쓰레드
             dataReaderThread = new Thread(dataReader);
             dataReaderThread.Start(serial);
+            //dataReaderThread.IsBackground = true;
 
             dataUserThread = new Thread(dataUser);
             dataUserThread.Start();
+            //dataUserThread.IsBackground = true;
 
+            // 무게중심 찾는 쓰레드
             comSeekerThread = new Thread(copSeeker);
             comSeekerThread.Start();
+            //comSeekerThread.IsBackground = true;
 
+            // DB시간측정용 쓰레드
             dateTimeThread = new Thread(timeLogger);
             dateTimeThread.Start();
+            //dateTimeThread.IsBackground = true;
 
-            //stopWatch.Start();
-            stopWatch3.Start(); //선영 스톱워치
-        }
+            databaseThread = new Thread(insertTable);
+            databaseThread.Start();
 
-        //---------------------------------------------------------------------
-        //소리 테스트 2 
-        private void playSimpleSound_falling() //낙상 - 음악은 컴퓨터 C에 넣어둬야함
-        {
-            SoundPlayer simpleSound = new SoundPlayer(@"C:\falling.mp3");
-            simpleSound.PlayLooping();
-        }
-
-        //---------------------------------------------------------------------
-        private void playSimpleSound_decubitus() //욕창
-        {
-            SoundPlayer simpleSound = new SoundPlayer(@"C:\smokealarm.mp3");
-            simpleSound.PlayLooping();
         }
 
         //---------------------------------------------------------------------
@@ -321,15 +271,8 @@ namespace Loadcell
                 child.SetAttribute("unit", unit[i].ToString());
             }
 
-            try
-            {
-                xdoc.Save("SPRS_Config.xml");
-            }
-            catch
-            {
-                Console.WriteLine("Configuration File Save Error");
-            }
-
+            try { xdoc.Save("SPRS_Config.xml"); }
+            catch { Console.WriteLine("Configuration File Save Error"); }
         }
 
         //------------------------------------
@@ -371,12 +314,10 @@ namespace Loadcell
                 if (tareReady) buttonStack.Children.Add(unitBtn);
                 if (unitReady) buttonStack.Children.Add(measureBtn);
                 buttonStack.Children.Add(cameraBtn);
+                buttonStack.Children.Add(chartBtn);
                 buttonStack.Children.Add(closeBtn);
             }
-            else
-            {
-                buttonStack.Children.Add(stopBtn);
-            }
+            else { buttonStack.Children.Add(stopBtn); }
         }
 
 
@@ -468,9 +409,7 @@ namespace Loadcell
                     canvasMode = xCanvasMode.IDLE;
                 }
             }
-
             canvasMutex.ReleaseMutex();
-
         }
 
         //---------------------------------------------
@@ -491,11 +430,16 @@ namespace Loadcell
         {
             Process process = new Process();
             process.StartInfo.FileName = "chrome.exe";
-            process.StartInfo.Arguments = "http://www.naver.com";
+            process.StartInfo.Arguments = "http://192.168.43.224:8091/?action=stream";
             process.StartInfo.WindowStyle = ProcessWindowStyle.Normal;
             process.Start();
+        }
 
-        }        
+        //--------------------------------------
+        void chartBtn_Click(object sender, MouseButtonEventArgs args)
+        {
+            new OnlyCharts().ShowDialog();
+        }
 
         //--------------------------------------
         void stopBtn_Click(object sender, MouseButtonEventArgs args)
@@ -505,13 +449,13 @@ namespace Loadcell
 
             if (tareReady && unitReady) setMode(xMode.IDLE);
             else setMode(xMode.SETUP);
+
+            stopWatch.Stop();
         }
 
         //--------------------------------------
         void closeBtn_Click(object sender, MouseButtonEventArgs args)
         {
-            //running = false;
-
             ////주의!!
             ////메인 스레드가 아래의 스레드들의 Join함수에서 대기하고 있는 동안 스레드에서 
             ////Invoke를 통하여 호출한 메인스레드 함수의 실행을 할 수 없기 때문에 Deadlock이 발생할 수 있음.
@@ -532,8 +476,7 @@ namespace Loadcell
             double[] temp = new double[4];
             for (int i = 0; i < 4; i++) temp[i] = tare[i];  //save for cancel event
             stopBtn.Content = (string)btn.ButtonText + " [완료]";
-
-
+            
             xMode saveMode = currentMode;
 
             setMode(xMode.TARE_INFO);
@@ -569,8 +512,7 @@ namespace Loadcell
             stopBtn.Content = (string)btn.ButtonText + " [완료]";
             setMode(xMode.MEASURE);
 
-            //// 하희 수정
-            stopWatch2.Start();
+            stopWatch.Start();
             ResetBtn.IsEnabled = true;
 
             BedsoreTime();
@@ -611,11 +553,7 @@ namespace Loadcell
                 return;
             }
 
-            try
-            {
-                samplingMass = Convert.ToDouble(dlg.samplingMass.Text) / 4.0;
-
-            }
+            try { samplingMass = Convert.ToDouble(dlg.samplingMass.Text) / 4.0; }
             catch (Exception e)
             {
                 MessageBox.Show("적절한 double타입의 값이 아닙니다.", "Error");
@@ -638,7 +576,6 @@ namespace Loadcell
 
                 return;
             }
-
             samplingCount = 0;
             setMode(xMode.UNIT);
         }
@@ -649,27 +586,20 @@ namespace Loadcell
             Dispatcher.Invoke(new Action(delegate
             {
                 ResetBtn.IsEnabled = true;
-                stopWatch2.Reset();
-                ts = stopWatch2.Elapsed;
+                stopWatch.Restart();
+                ts = stopWatch.Elapsed;
 
                 strTotalTimer = String.Format("{0:00}:{1:00}:{2:00}.{3:00}", ts.Hours, ts.Minutes, ts.Seconds, ts.Milliseconds / 10);
                 ProgressTimer.Text = strTotalTimer;
-
             }));
-            timecount = 0;
-            simpleSound.Stop();
         }
 
         //----------------------------------------
         void getTareMass(double[] data)
         {
-
             if (currentMode == xMode.TARE_INFO)
             {
-                for (int i = 0; i < 4; i++)
-                {
-                    massLabel[i].Content = roundUpInt(tare[i] = data[i]).ToString();
-                }
+                for (int i = 0; i < 4; i++) { massLabel[i].Content = roundUpInt(tare[i] = data[i]).ToString(); }
             }
             else if (currentMode == xMode.TARE)
             {
@@ -690,10 +620,7 @@ namespace Loadcell
         {
             if (tareReady == false) return;
 
-            for (int i = 0; i < 4; i++)
-            {
-                data[i] -= tare[i];
-            }
+            for (int i = 0; i < 4; i++) { data[i] -= tare[i]; }
 
             if (currentMode == xMode.UNIT_INFO)
             {
@@ -704,7 +631,6 @@ namespace Loadcell
             }
             else if (currentMode == xMode.UNIT)
             {
-
                 samplingCount++;
 
                 if (samplingCount == 0) samplingCount = 1;
@@ -713,11 +639,9 @@ namespace Loadcell
 
                 for (int i = 0; i < 4; i++)
                 {
-                    massLabel[i].Content = //unitLabel[i].Content =
-                      roundUpInt(unit[i] = (unit[i] * rate) + (data[i] * (1.0 - rate) / samplingMass)).ToString();
+                    massLabel[i].Content = roundUpInt(unit[i] = (unit[i] * rate) + (data[i] * (1.0 - rate) / samplingMass)).ToString();
                 }
             }
-
             Center.Content = samplingCount.ToString();
         }
 
@@ -751,24 +675,24 @@ namespace Loadcell
                 }
                 totalMass = 0;
 
-                if (IfFalling) // 무게가 사라졌을 때 falling
-                {
-                    playSimpleSound_falling();
-                }
+                // 무게가 사라졌을 때 falling
+                if (IfFalling)  { MessageBox.Show("Falling!"); }
             }
 
+
+            // 기본상태(측정모드가 아닌)에서 값 표시--------------------------------------------------------------------
             if (currentMode == xMode.IDLE)
             {
                 Dispatcher.Invoke(new Action(delegate
                 {
-                    for (int i = 0; i < 4; i++)
-                    {
-                        massLabel[i].Content = data[i].ToString("N2");
-                    }
+                    for (int i = 0; i < 4; i++) { massLabel[i].Content = data[i].ToString("N2"); }
 
                     Center.Content = totalMass.ToString("N1");
                 }));
             }
+
+
+            // 무게중심 계산해서 캔버스의 cop위치 바꾸는 부분--------------------------------------------------------------
             if (totalMass >= minWeight)
             {
                 IfFalling = true; // falling 판별 위해 일단 환자가 있었다는 것을 알려주기 위해서이다
@@ -801,14 +725,8 @@ namespace Loadcell
             massTotal = totalMass;
             ratioMutex.ReleaseMutex();
 
-            try
-            {
-                findPosition(data1);
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine("findPisition Error : " + e.Message);
-            }
+            try { findPosition(data1); }
+            catch (Exception e) { Console.WriteLine("findPisition Error : " + e.Message); }
         }
 
         //---------------------------------------------------------------------
@@ -833,31 +751,20 @@ namespace Loadcell
                 {
                     for (int j = 0; j < labelcol; j++)
                     {
-                        if (totalMass < 1.0)
-                        {
-                            Circle.Fill.Opacity = 0;
-                        }
-                        else
-                        {
-                            Circle.Fill.Opacity = 1;
-                        }
+                        if (totalMass < 1.0) { Circle.Fill.Opacity = 0; }
+                        else { Circle.Fill.Opacity = 1; }
 
                         massdist[i, j] = startMass + dx * j;
-                        //Math.Round((data[0] + i * left), 2)
                         if (massdist[i, j] < 0.0) massdist[i, j] = 0.0;
 
                         int color = (int)(255 * (massdist[i, j] / totalMass * 2.0)) - 80;
 
                         if (color > 100) color = (int)(color * 3.0);
-                        //else  color = (int)(color * 0.5);
 
                         if (color > 255) color = 255;
                         if (color < 0 || totalMass <= 1.0) color = 0;
-                        //gridLabel[i, j].Content = color.ToString(); //grid에 숫자
                         gridLabel[i, j].Content = ""; //grid에 아무것도 안넣기
                         gridLabel[i, j].Background = new SolidColorBrush(Color.FromArgb(255, (byte)color, (byte)color, (byte)color));
-
-                        //Console.Write("{0}  ", Math.Round(massdist[i, j],2));
                     }
                 }));
             }
@@ -865,31 +772,28 @@ namespace Loadcell
 
         Boolean TimeChanged()
         {
-            //TimeSpan ts3 = stopWatch3.Elapsed;
-            ts3 = stopWatch3.Elapsed;
-            //Console.WriteLine("\ntimechanged()  ts3.Seconds  =  " + ts3.Seconds);
-            string MovedTime = String.Format("{0:00}:{1:00}", ts3.Minutes, ts3.Seconds);
+            ts = stopWatch.Elapsed;
+         
+            string MovedTime = String.Format("{0:00}:{1:00}", ts.Minutes, ts.Seconds);
 
-            if (ts3.Seconds > 3)
+            if (ts.Seconds > 3)
             {
-                stopWatch3.Restart();
-                MovedTime = String.Format("{0:00}:{1:00}", ts3.Minutes, ts3.Seconds);
+                //stopWatch.Restart();
+                MovedTime = String.Format("{0:00}:{1:00}", ts.Minutes, ts.Seconds);
             }
 
-            if ((ts3.Seconds + 1) % 4 == 0)
+            if ((ts.Seconds + 1) % 4 == 0)
             {
-                stopWatch3.Restart();
-                MovedTime = String.Format("{0:00}:{1:00}", ts3.Minutes, ts3.Seconds);                
+                //stopWatch.Restart();
+                MovedTime = String.Format("{0:00}:{1:00}", ts.Minutes, ts.Seconds);                
 
                 return true;
             }
-            else
-                return false;
-
+            else   return false;
         }
 
-        //---------------------------------------------------------------------
-        Boolean PatientMove2()
+        // 무게중심이 움직인 거리 파악---------------------------------------------------------------------
+        Boolean PatientMove() 
         {
             double dx = saveCOP.X - COP.X;
             double dy = saveCOP.Y - COP.Y;
@@ -897,56 +801,6 @@ namespace Loadcell
 
             if (distance > 0.2) return true;
             return false;
-        }
-
-        //---------------------------------------------------------------------
-        Boolean PatientMove()
-        {
-            double tmpX = 0.0, tmpY = 0.0;
-            double copX, copY;
-            double x, y;
-            double root;
-
-            copX = (((data1[0] + data1[2]) * scaleBoardLeft + (data1[1] + data1[3]) * scaleBoardRight) / massTotal);
-            copY = (((data1[0] + data1[1]) * scaleBoardTop + (data1[2] + data1[3]) * scaleBoardBottom) / massTotal);
-            // Console.WriteLine("BF copX : " + copX + "\tcopY : " + copY);
-            //x축
-            if (copX > 0) //양수이면
-            {
-                copX += scaleBoardWidth / 2.0;
-            }
-            else //음수이면
-            {
-                copX *= (-1);
-            }
-
-            //y축
-            if (copY > 0)//양수이면
-            {
-                copY += scaleBoardHeight / 2.0;
-            }
-            else //음수이면
-            {
-                copY *= (-1);
-            }
-            // Console.WriteLine("AF copX : " + copX + "\tcopY : " + copY);
-
-            //시간이 흐른 후 그 점
-            if (TimeChanged()) //시간 지나고
-            {
-                if (tmpX != copX || tmpY != copY) //위치가 같지 않다면
-                {
-                    tmpX = copX;
-                    tmpY = copY;
-                }
-
-                x = tmpX - copX;
-                y = tmpY - copY;
-                root = Math.Sqrt((x * x) + (y * y));
-
-                if (root > 1.5) { return false; }
-            }
-            return true;
         }
 
         //********************내가 만듦************************
@@ -958,20 +812,14 @@ namespace Loadcell
         //---------------------------------------------------------------------
         void BedsoreTime()
         {
-            ts = stopWatch2.Elapsed;
+            ts = stopWatch.Elapsed;
             strTotalTimer = String.Format("{0:00}:{1:00}:{2:00}.{3:00}", ts.Hours, ts.Minutes, ts.Seconds, ts.Milliseconds / 10);
-
-            timecount++;
-
-            simpleSound = new SoundPlayer(@"C:\smokealarm.mp3");
-
+                        
             //욕창 소리 - 2분1초 지나면 소리
-            ts = stopWatch2.Elapsed;
-            strTotalTimerforsound = String.Format("{0:00}:{1:00}:{2:00}", ts.Hours, ts.Minutes, ts.Seconds);
+            ts = stopWatch.Elapsed;
             
             Dispatcher.Invoke(new Action(delegate
             {
-                //ProgressTimer.Text = stopWatch2.ElapsedMilliseconds.ToString();
                 ProgressTimer.Text = strTotalTimer;
             }));            
         }
@@ -1048,7 +896,6 @@ namespace Loadcell
 
                 Buffer.BlockCopy(buffer4, 0, buffer16, i * 4, 4);
             }
-
             return buffer16;
         }
 
@@ -1104,13 +951,10 @@ namespace Loadcell
                         continue;
                     }
                 }
-
                 dataMutex.WaitOne();
                 Buffer.BlockCopy(buffer16, 0, buffer, 0, 16);
                 newData = true;
                 dataMutex.ReleaseMutex();
-
-                readCount++;
             }//while
         }
 
@@ -1121,9 +965,6 @@ namespace Loadcell
             byte[] buffer4 = new byte[4];
             double[] data4 = new double[4];
             bool newOne = false;
-
-            int count = 0; //count해서 list출력 천천히하려고, 선영
-            //Int32 count=0;
 
             while (running)
             {
@@ -1171,39 +1012,33 @@ namespace Loadcell
                         break;
                     case xMode.IDLE:
                     case xMode.MEASURE:
-
-                        if (count % 20 == 1 && PatientMove2()) //2초, (count % 20 ==0)으로 하면 세팅이 완료되기 전의 쓰레기 data들이 list에 출력되기 때문에 1로 함
+                        Dispatcher.Invoke(new Action(delegate
                         {
-                            //DataGrid에 List 출력, 선영 수정
-                            Dispatcher.Invoke(new Action(delegate
+                            User newUser = new User()
                             {
-                                User newUser = new User()
-                                {
-                                    Time = (string)dateTimeString.Content,
-                                    DR = Math.Round(data1[3], 2),
-                                    DL = Math.Round(data1[2], 2),
-                                    UR = Math.Round(data1[1], 2),
-                                    UL = Math.Round(data1[0], 2),
-                                    TOTAL = Math.Round(massTotal, 2)
-                                };
+                                Time = (string)dateTimeString.Content,
+                                DR = Math.Round(data1[3], 2),
+                                DL = Math.Round(data1[2], 2),
+                                UR = Math.Round(data1[1], 2),
+                                UL = Math.Round(data1[0], 2),
+                                TOTAL = Math.Round(massTotal, 2)
+                            };
 
-                                //성연디비
-                                //APM_DB db = new APM_DB("http://10.1.34.151/bed/APM_DB.php", "beddb2");
-                                //string qeruyStr;
 
-                                //qeruyStr = string.Format("INSERT INTO sensor VALUES('{0}','{1}','{2}','{3}', '{4}')", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), 
-                                //                                                                               Math.Round(data1[0], 2), Math.Round(data1[1], 2), 
-                                //                                                                               Math.Round(data1[2], 2), Math.Round(data1[3], 2));
-                                //db.query(qeruyStr);
-                                users.Add(newUser);
-                                dgUsers.Items.Add(newUser);
-                            }));                            
-                        }
+                            // 라즈베리파이 DB------------------------------------
+                            //bool Dflag = true;
+                            //if ( Dflag ) { insertTable(); }
+                            //else { deleteTable(); }                            
+
+
+                            users.Add(newUser);
+                            dgUsers.Items.Add(newUser);
+                        }));
 
                         BedsoreTime();
                         getCenterOfMass(data4);
 
-                        if (testRun) Thread.Sleep(50);
+                        if (testRun) Thread.Sleep(10);
                         break;
                 }
                 switch (currentMode)
@@ -1217,9 +1052,66 @@ namespace Loadcell
                         Thread.Sleep(10);
                         break;
                 }
-                useCount++;
-                count++;
             }
+        }
+
+        void deleteTable()
+        {
+            // 라즈베리파이 DB------------------------------------
+            string source = "Server=192.168.123.127;Port=3306;Database=BED_DB;Uid=root;Pwd=0000;";
+
+            MySqlConnection con = new MySqlConnection(source);
+
+            try
+            {
+                con.Open();
+
+                // delete data---------------------------------
+                MySqlCommand query = new MySqlCommand("DELETE FROM rawdata1_Table", con);
+                query.ExecuteNonQuery();
+
+                query.CommandText = "DELETE FROM rawdata2_Table";
+                query.ExecuteNonQuery();
+            }
+            catch (Exception) { MessageBox.Show("DB Error"); }
+            finally { con.Close(); }
+        }
+
+        //int c = DateTime.Now.Second;
+        void insertTable()
+        {
+            // 라즈베리파이 DB------------------------------------
+            string source = "Server=192.168.0.54;Port=3306;Database=BED_DB;Uid=root;Pwd=0000;";
+            //string source = "Server=192.168.123.127;Port=3306;Database=BED_DB;Uid=root;Pwd=0000;";
+
+            MySqlConnection con = new MySqlConnection(source);
+
+            while(true)
+            {
+                try
+                {
+                    con.Open();
+
+                    // insert data---------------------------------------------
+                    string querySentence = string.Format("INSERT INTO rawdata1_Table VALUES('{0}','{1}','{2}','{3}','{4}')",
+                                     DateTime.Now.ToString("MM-dd HH:mm:ss"), Math.Round(data1[0], 2), Math.Round(data1[1], 2),
+                                                                              Math.Round(data1[2], 2), Math.Round(data1[3], 2));
+
+                    MySqlCommand query = new MySqlCommand(querySentence, con);
+                    query.ExecuteNonQuery();
+
+                    string querySentence2 = string.Format("INSERT INTO rawdata2_Table VALUES('{0}','{1}','{2}','{3}')",
+                                     DateTime.Now.ToString("MM-dd HH:mm:ss"), Math.Round(COP.X, 2), Math.Round(COP.Y, 2), Math.Round(massTotal, 2));
+                    query.CommandText = querySentence2;
+                    query.ExecuteNonQuery();
+
+                }
+                catch (Exception) { MessageBox.Show("DB Error"); }
+                finally { con.Close(); }
+
+                Thread.Sleep(500);
+            }
+            
         }
 
         void copSeeker()
@@ -1247,8 +1139,6 @@ namespace Loadcell
                 Dispatcher.Invoke(new Action(delegate { moveCursor(); }));
 
                 Thread.Sleep(10);
-
-                seekCount++;
             }
         }
 
@@ -1263,11 +1153,8 @@ namespace Loadcell
 
                 Dispatcher.Invoke(delegate
                 {
-                    dateTimeString.Content = string.Format("{0} {1}",
-                                                    dt.ToString(),
-                                                    dt.DayOfWeek.ToString().Substring(0, 3));
+                    dateTimeString.Content = string.Format("{0} {1}", dt.ToString(), dt.DayOfWeek.ToString().Substring(0, 3));
                 });
-
                 Thread.Sleep(1000);
             }
         }
@@ -1275,7 +1162,6 @@ namespace Loadcell
         //---------------------------------------
         void terminator(object obj)
         {
-
             Window mainWin = obj as Window;
             running = false;
 
@@ -1283,7 +1169,6 @@ namespace Loadcell
             //메인 스레드가 다른 쓰레드의 Join을 기다리고 있을 때 해당 쓰레드가 Invoke를 통해 호출된 메인 스레드의 함수의 종료를 대기 중
             //이라면 Deadlock 발생함.  왜냐하면 메인 스레드는 Join을 기다리느라 Invoke된 함수를 실행할 수 없고 해당 스레드는 
             //Invoke한 함수의 실행완료를 대기중이라 Join할 수 없기 때문.
-            //
             //따라서 Join을 다른 별도의 스레드를 사용하여 대기하는 방법을 테스트함...
 
             if (dataReaderThread != null)
@@ -1291,7 +1176,6 @@ namespace Loadcell
                 dataReaderThread.Join();
                 Console.WriteLine("dataReader joined");
             }
-
 
             if (dataUserThread != null)
             {
@@ -1319,26 +1203,18 @@ namespace Loadcell
                 }
             }
 
+            if (databaseThread != null)
+            {
+                databaseThread.Abort();
+                Console.WriteLine("database Aborted");
+            }
+
             if (testRun == false)
             {
                 if (tareReady && unitReady) saveConfiguration();
             }
 
-            //if (chartsThread != null)
-            //{
-            //    chartsThread.Join();
-            //    Console.WriteLine("chartsThread joined");
-            //}
-
             stopWatch.Stop();
-
-            double secs = ((double)stopWatch.ElapsedMilliseconds) / 1000.0;
-
-            Console.WriteLine("\n-----------------------------------");
-            Console.WriteLine("실행시간(초):{0}", secs);
-            Console.WriteLine("readCount/초: {0}", (long)((readCount / secs + 0.05) * 10.0) / 10.0);
-            Console.WriteLine("useCount/초: {0}", (long)((useCount / secs + 0.05) * 10.0) / 10.0);
-            Console.WriteLine("seekCount/초: {0}", (long)((seekCount / secs + 0.05) * 10.0) / 10.0);
 
             Dispatcher.Invoke(new Action(delegate { mainWin.Close(); }));
         }
@@ -1379,16 +1255,13 @@ namespace Loadcell
                 cross2.X2 = canPos.X + 10;
                 cross2.Y1 = cross2.Y2 = canPos.Y;
             }
-
             else if (canvasMode == xCanvasMode.IDLE)
             {
                 Canvas.SetLeft(Center, canPos.X - (Center.Width * 0.5));
                 Canvas.SetTop(Center, canPos.Y - (Center.Height * 0.5));
             }
-
             canvasMutex.ReleaseMutex();
         }
-
 
         //---------------------------------------
         private SerialPort getSerialPort()
@@ -1399,7 +1272,6 @@ namespace Loadcell
 
             while (true)
             {
-
                 xSerialPortDlg dlg = new xSerialPortDlg();
 
                 dlg.Owner = this;
@@ -1432,16 +1304,12 @@ namespace Loadcell
                 serial.ReadTimeout = 500;  //밀리초
                 serial.WriteTimeout = 500; //밀리초
 
-                try
-                {
-                    serial.Open();
-                }
+                try { serial.Open(); }
                 catch (Exception e)
                 {
                     MessageBox.Show("Serial Port Open Error:\n\n" + e.Message, "Error");
                     continue;
                 }
-
                 break;
             }//while true
 
@@ -1480,9 +1348,6 @@ namespace Loadcell
 
             ListItem item = viewItem.Content as ListItem;
             if (item == null) return;
-
-            //Do your stuff below
-
         }       
     }//class
 }//class
